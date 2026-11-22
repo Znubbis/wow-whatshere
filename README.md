@@ -2,6 +2,8 @@
 
 A WoW: Forever addon that lists quests you can turn in (all zones), plus profession trainers and recipe vendors worth visiting in your current zone. Click a row to set a waypoint.
 
+![What's Here in Desolace: one quest to turn in elsewhere, four recipe vendors nearby](docs/screenshot.png)
+
 **Download:** grab `WhatsHere-x.y.z.zip` from [Releases](../../releases), unzip it into `World of Warcraft/_forever_/Interface/AddOns/`, and restart the game. Requires **QuestieDB**.
 
 Full description, dependencies and known limitations: [WhatsHere/README.md](WhatsHere/README.md).
