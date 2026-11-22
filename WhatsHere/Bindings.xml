@@ -1,0 +1,5 @@
+<Bindings>
+	<Binding name="WHATSHERE_TOGGLE" header="WHATSHERE" category="ADDONS">
+		WhatsHere_Toggle()
+	</Binding>
+</Bindings>
