@@ -36,6 +36,11 @@ for line, s in pairs(SKILLS) do
 end
 
 local db
+local charDb = { saved = {} } -- per character (WhatsHereCharDB)
+-- /wh perf: where the time goes (cheap counters, always on)
+local perf = { n = 0, total = 0, max = 0, t = {}, c = {}, ev = {} }
+local function PerfAdd(key, ms) perf.t[key] = (perf.t[key] or 0) + ms end
+local function PerfCount(key) perf.c[key] = (perf.c[key] or 0) + 1 end
 local playerFaction = "A"
 local zones = { areaToUi = {}, uiToArea = {}, parent = {} }
 local index = { state = "waiting", trainers = {}, vendors = {} }
@@ -213,6 +218,7 @@ end
 
 local function WorldPos(ui, x, y) -- x, y in 0..1
     if not (C_Map.GetWorldPosFromMapPos and CreateVector2D) then return end
+    PerfCount("worldPos")
     local ok, inst, pos = pcall(C_Map.GetWorldPosFromMapPos, ui, CreateVector2D(x, y))
     if ok and inst and pos then
         local wx, wy = pos:GetXY()
@@ -247,9 +253,22 @@ local function InZone(area, cur)
     return area == cur.area or (cur.area and zones.parent[area] == cur.area) or AreaUi(area) == cur.ui
 end
 
+-- NPC spawn points never move, so their world positions are looked up once.
+local worldCache = {}
+local function SpawnWorldPos(ui, x, y) -- x, y in 0..100
+    local key = (ui * 10001 + math.floor(x * 100 + 0.5)) * 10001 + math.floor(y * 100 + 0.5)
+    local c = worldCache[key]
+    if c == nil then
+        local inst, wx, wy = WorldPos(ui, x / 100, y / 100)
+        c = inst and { inst, wx, wy } or false
+        worldCache[key] = c
+    end
+    if c then return c[1], c[2], c[3] end
+end
+
 local function Distance(cur, ui, x, y)
     if not (cur and cur.wx) then return nil end
-    local inst, wx, wy = WorldPos(ui, x / 100, y / 100)
+    local inst, wx, wy = SpawnWorldPos(ui, x, y)
     if not inst or inst ~= cur.inst then return nil end
     local dx, dy = wx - cur.wx, wy - cur.wy
     return math.sqrt(dx * dx + dy * dy)
@@ -343,10 +362,170 @@ local function CollectTurnIns(cur)
 end
 
 -- Trainers and recipe vendors with a spawn in this zone (cached per map; distances recomputed).
+-- Quest goals: where to do the unfinished parts of the quests in your log.
+-- Targets come from QuestieDB (mobs to kill, objects to use, item drop sources, explore spots);
+-- progress comes from the game's own objective lines, matched by name.
+local MAX_SOURCES = 30 -- item drop sources considered per item
+local targetCache, goalPoints = {}, {}
+
+local function QuestTargets(q)
+    local list = targetCache[q]
+    if list then return list end
+    list = {}
+    local function add(name, spawns, match)
+        if type(spawns) == "table" and next(spawns) then
+            local m = {}
+            for _, s in ipairs(match) do
+                if type(s) == "string" and s ~= "" then m[#m + 1] = s:lower() end
+            end
+            list[#list + 1] = { name = name, spawns = spawns, match = m }
+        end
+    end
+    local o = LQ.Quest.objectives(q)
+    if type(o) == "table" then
+        for _, t in ipairs(o[1] or {}) do
+            local n = NpcInfo(t[1])
+            add(n.name, n.spawns, { n.name, t[2] })
+        end
+        for _, t in ipairs(o[2] or {}) do
+            local n = ObjInfo(t[1])
+            add(t[2] or n.name, n.spawns, { n.name, t[2] })
+        end
+        for _, t in ipairs(o[3] or {}) do
+            local item = LQ.Item.name(t[1]) or ("Item " .. t[1])
+            local match = { item, t[2] }
+            local count = 0
+            for _, id in ipairs(LQ.Item.npcDrops(t[1]) or {}) do
+                count = count + 1
+                if count > MAX_SOURCES then break end
+                local n = NpcInfo(id)
+                add(n.name, n.spawns, match)
+            end
+            for _, id in ipairs(LQ.Item.objectDrops(t[1]) or {}) do
+                count = count + 1
+                if count > MAX_SOURCES then break end
+                local n = ObjInfo(id)
+                add(n.name, n.spawns, match)
+            end
+        end
+        for _, t in ipairs(o[5] or {}) do
+            local base = NpcInfo(t[2])
+            for _, id in ipairs(t[1] or {}) do
+                local n = NpcInfo(id)
+                add(n.name, n.spawns, { base.name, t[3], n.name })
+            end
+        end
+    end
+    local trig = LQ.Quest.triggerEnd(q)
+    if type(trig) == "table" then add(trig[1] or "Explore", trig[2], { trig[1] }) end
+    targetCache[q] = list
+    return list
+end
+
+-- The game objective line a target belongs to ("Durotar Tiger Fur: 2/4"), if any.
+local function MatchObjective(objs, target)
+    for _, ob in ipairs(objs) do
+        local text = ob.text and ob.text:lower()
+        if text then
+            for _, m in ipairs(target.match) do
+                if text:find(m, 1, true) then return ob end
+            end
+        end
+    end
+end
+
+-- Every target spawn point inside the current zone, per quest (static data, cached per map).
+local function PointsHere(q, cur)
+    local zc = goalPoints[cur.ui]
+    if not zc then
+        zc = {}
+        goalPoints[cur.ui] = zc
+    end
+    local pts = zc[q]
+    if pts then return pts end
+    pts = {}
+    for _, t in ipairs(QuestTargets(q)) do
+        for area, coords in pairs(t.spawns) do
+            local ui = AreaUi(area)
+            if ui and type(coords) == "table" and InZone(area, cur) then
+                for _, c in ipairs(coords) do
+                    local x, y = c[1], c[2]
+                    if x and y and x >= 0 and y >= 0 then pts[#pts + 1] = { t = t, area = area, ui = ui, x = x, y = y } end
+                end
+            end
+        end
+    end
+    zc[q] = pts
+    return pts
+end
+
+-- Nearest unfinished goal of quest q: in this zone, or (anywhere = true) wherever it is.
+local function NearestGoal(q, cur, anywhere)
+    local objs = (C_QuestLog.GetQuestObjectives and C_QuestLog.GetQuestObjectives(q)) or {}
+    local open = {}
+    for _, t in ipairs(QuestTargets(q)) do
+        local ob = MatchObjective(objs, t)
+        if not (ob and ob.finished) then open[t] = ob or false end
+    end
+    if not next(open) then return nil end
+    local best, bestD
+    if cur then
+        for _, p in ipairs(PointsHere(q, cur)) do
+            if open[p.t] ~= nil then
+                local d = Distance(cur, p.ui, p.x, p.y) or huge
+                if not best or d < bestD then best, bestD = p, d end
+            end
+        end
+    end
+    local loc, target
+    if best then
+        target = best.t
+        loc = { area = best.area, ui = best.ui, x = best.x, y = best.y, here = true, dist = bestD < huge and bestD or nil }
+    elseif anywhere then
+        -- Not in this zone: point at the target with the most spawns (the main mob, not a rare drop).
+        local most = -1
+        for t in pairs(open) do
+            if not t.count then
+                t.count = 0
+                for _, coords in pairs(t.spawns) do
+                    if type(coords) == "table" then t.count = t.count + #coords end
+                end
+            end
+            if t.count > most then
+                local s = BestSpawn(t.spawns, cur, nil, false)
+                if s then loc, target, most = s, t, t.count end
+            end
+        end
+    end
+    if not loc then return nil end
+    loc.zoneName = ZoneName(loc.ui)
+    local ob = open[target]
+    return { loc = loc, what = target.name, progress = ob and ob.text or nil, objectives = objs }
+end
+
+local function CollectGoals(cur, skip)
+    local out = {}
+    for i = 1, C_QuestLog.GetNumQuestLogEntries() do
+        local info = C_QuestLog.GetInfo(i)
+        local q = info and not info.isHeader and info.questID
+        if q and q > 0 and not skip[q] and not ReadyForTurnIn(q)
+            and not (C_QuestLog.IsFailed and C_QuestLog.IsFailed(q)) then
+            local g = NearestGoal(q, cur, false)
+            if g then
+                g.kind, g.quest, g.title, g.level = "goal", q, info.title or ("Quest " .. q), info.level
+                out[#out + 1] = g
+            end
+        end
+    end
+    table.sort(out, function(a, b) return (a.loc.dist or huge) < (b.loc.dist or huge) end)
+    return out
+end
+
 local function ZoneCandidates(cur)
     local key = cur.ui
     local c = zoneCache[key]
     if c then return c end
+    PerfCount("zoneScan")
     c = { trainers = {}, vendors = {} }
     if index.state ~= "ready" then return c end
     for _, t in ipairs(index.trainers) do
@@ -383,6 +562,7 @@ local function RecipeKnown(r)
     if cached and GetTime() - cached < 30 then return false end -- re-check unknown ones now and then
     local known = (r.spell and IsPlayerSpell and IsPlayerSpell(r.spell)) or false
     if not known and C_TooltipInfo and C_TooltipInfo.GetItemByID and KNOWN_TEXT then
+        PerfCount("tooltipScan")
         local data = C_TooltipInfo.GetItemByID(r.id)
         if data and data.lines then
             for _, l in ipairs(data.lines) do
@@ -451,6 +631,7 @@ local function SpellKnown(spell)
     if c and GetTime() - c < 10 then return false end
     local known = (IsPlayerSpell and IsPlayerSpell(spell))
         or (C_SpellBook and C_SpellBook.IsSpellKnown and C_SpellBook.IsSpellKnown(spell)) or false
+    PerfCount("spellCheck")
     if not known and C_TradeSkillUI and C_TradeSkillUI.GetRecipeInfo then
         local ok, info = pcall(C_TradeSkillUI.GetRecipeInfo, spell)
         known = (ok and info and info.learned) and true or false
@@ -626,19 +807,55 @@ local function Header(key, text, count)
 end
 
 local TURNIN_ICON = "Interface\\GossipFrame\\ActiveQuestIcon" -- yellow "?"
-local summary = { here = 0, other = 0, trainers = 0, vendors = 0 }
+local summary = { here = 0, other = 0, goals = 0, trainers = 0, vendors = 0 }
 
 local function BuildModel(cur)
     wipe(model)
+    local t0 = debugprofilestop()
     local quests = CollectTurnIns(cur)
-    local here, other = {}, {}
+    PerfAdd("turnIns", debugprofilestop() - t0)
+    local here, other, saved, savedSet = {}, {}, {}, {}
+    local hereCount = 0
     for _, q in ipairs(quests) do
-        if q.loc and q.loc.here then here[#here + 1] = q else other[#other + 1] = q end
+        if q.loc and q.loc.here then hereCount = hereCount + 1 end
+        if charDb.saved[q.quest] then
+            q.saved = true
+            saved[#saved + 1] = q
+            savedSet[q.quest] = true
+        elseif q.loc and q.loc.here then
+            here[#here + 1] = q
+        else
+            other[#other + 1] = q
+        end
     end
-    summary.here, summary.other, summary.trainers, summary.vendors = #here, #other, 0, 0
+    -- Saved quests still in progress follow you to every zone, pointing at their nearest goal.
+    for i = 1, C_QuestLog.GetNumQuestLogEntries() do
+        local info = C_QuestLog.GetInfo(i)
+        local q = info and not info.isHeader and info.questID
+        if q and charDb.saved[q] and not savedSet[q] then
+            local g = NearestGoal(q, cur, true) or {}
+            g.kind, g.quest, g.title, g.level, g.saved = "goal", q, info.title or ("Quest " .. q), info.level, true
+            g.failed = C_QuestLog.IsFailed and C_QuestLog.IsFailed(q) or nil
+            saved[#saved + 1] = g
+            savedSet[q] = true
+        end
+    end
+    summary.here, summary.other, summary.goals, summary.trainers, summary.vendors = hereCount, #other, 0, 0, 0
+    if #saved > 0 and Header("saved", "Saved", #saved) then
+        for _, e in ipairs(saved) do model[#model + 1] = e end
+    end
     -- Turn-ins in this zone get their own section on top, so they are impossible to miss.
     if #here > 0 and Header("questsHere", "|T" .. TURNIN_ICON .. ":14|t  Turn in here: " .. cur.name, #here) then
         for _, q in ipairs(here) do model[#model + 1] = q end
+    end
+    if cur then
+        t0 = debugprofilestop()
+        local goals = CollectGoals(cur, savedSet)
+        PerfAdd("goals", debugprofilestop() - t0)
+        summary.goals = #goals
+        if Header("goals", "Quest goals in " .. cur.name, #goals) then
+            for _, g in ipairs(goals) do model[#model + 1] = g end
+        end
     end
     if Header("quests", #here > 0 and "Turn in elsewhere" or "Turn in", #other) then
         for _, q in ipairs(other) do model[#model + 1] = q end
@@ -649,7 +866,9 @@ local function BuildModel(cur)
             text = index.state == "error" and "|cffff5555Could not read QuestieDB|r" or "|cff999999Loading trainers and recipes…|r" }
         return
     end
+    t0 = debugprofilestop()
     local trainers, vendors = CollectZone(cur)
+    PerfAdd("zone", debugprofilestop() - t0)
     summary.trainers, summary.vendors = #trainers, #vendors
     if Header("trainers", "Trainers in " .. cur.name, #trainers) then
         for _, t in ipairs(trainers) do model[#model + 1] = t end
@@ -662,10 +881,21 @@ end
 local function RowTooltip(row)
     local e = row.entry
     if not e or e.header then return end
-    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+    -- Beside the window, level with the row; flips to the left side near the screen's right edge.
+    GameTooltip:SetOwner(row, "ANCHOR_NONE")
+    GameTooltip:ClearAllPoints()
+    GameTooltip:SetPoint("TOPLEFT", frame, "TOPRIGHT", 8, row:GetTop() - frame:GetTop())
     if e.kind == "quest" then
         GameTooltip:AddLine(e.title)
         GameTooltip:AddLine("Turn in to " .. (e.who or "unknown"), 1, 1, 1)
+    elseif e.kind == "goal" then
+        GameTooltip:AddLine(e.title)
+        for _, ob in ipairs(e.objectives or {}) do
+            if ob.text and ob.text ~= "" then
+                if ob.finished then GameTooltip:AddLine(ob.text, 0.4, 0.8, 0.4) else GameTooltip:AddLine(ob.text, 1, 1, 1) end
+            end
+        end
+        if e.what then GameTooltip:AddLine("Nearest: " .. e.what, 1, 0.82, 0) end
     else
         GameTooltip:AddLine(e.name)
         if e.sub then GameTooltip:AddLine(e.sub, 1, 1, 1) end
@@ -700,7 +930,16 @@ local function RowTooltip(row)
     end
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine(e.loc and "Click: set waypoint" or "Location missing from the database", 0.4, 0.8, 1)
+    if e.quest then
+        GameTooltip:AddLine(charDb.saved[e.quest] and "Right-click: remove from Saved"
+            or "Right-click: save (stays on top in every zone)", 0.4, 0.8, 1)
+    end
     GameTooltip:Show()
+    local right, screen = GameTooltip:GetRight(), UIParent:GetRight()
+    if right and screen and right * GameTooltip:GetEffectiveScale() > screen * UIParent:GetEffectiveScale() then
+        GameTooltip:ClearAllPoints()
+        GameTooltip:SetPoint("TOPRIGHT", frame, "TOPLEFT", -8, row:GetTop() - frame:GetTop())
+    end
 end
 
 -- Look: EllesmereUI's skinning API paints the window in the user's EUI theme (fonts, backdrop,
@@ -762,7 +1001,7 @@ local function CreateRow(i)
     row:SetHeight(ROW_H)
     row:SetPoint("TOPLEFT", body, "TOPLEFT", PAD, -(i - 1) * ROW_H)
     row:SetPoint("RIGHT", body, "RIGHT", -PAD, 0)
-    row:RegisterForClicks("LeftButtonUp")
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     local hl = row:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
     hl:SetColorTexture(1, 1, 1, 0.06)
@@ -787,9 +1026,19 @@ local function CreateRow(i)
     row.rule:SetHeight(1)
     row.rule:SetPoint("BOTTOMLEFT", 0, 3)
     row.rule:SetPoint("BOTTOMRIGHT", 0, 3)
-    row:SetScript("OnClick", function(self)
+    row:SetScript("OnClick", function(self, button)
         local e = self.entry
         if not e then return end
+        if button == "RightButton" then
+            if e.quest then
+                local now = not charDb.saved[e.quest] or nil
+                charDb.saved[e.quest] = now
+                Print((now and "saved: " or "removed from Saved: ") .. e.title)
+                Refresh()
+                if self:IsMouseOver() then RowTooltip(self) end
+            end
+            return
+        end
         if e.header then
             db.collapsed[e.key] = not db.collapsed[e.key] or nil
             Refresh()
@@ -845,6 +1094,20 @@ local function Render()
                         row.line2:SetText((e.who or "Unknown NPC") .. " · location unknown")
                         row.right:SetText("")
                     end
+                elseif e.kind == "goal" then
+                    row.line1:SetText(QuestColor(e.level) .. "[" .. (e.level or "?") .. "]|r " .. e.title
+                        .. (e.failed and "  |cffff5555failed|r" or ""))
+                    if e.loc then
+                        local parts = {}
+                        if e.progress then parts[#parts + 1] = "|cffdddddd" .. e.progress .. "|r" end
+                        if e.what and not (e.progress and e.progress:lower():find(e.what:lower(), 1, true)) then parts[#parts + 1] = e.what end
+                        if not e.loc.here then parts[#parts + 1] = e.loc.zoneName end
+                        row.line2:SetText(table.concat(parts, " · "))
+                        row.right:SetText(e.loc.here and FormatDist(e.loc) or ("|cff888888" .. e.loc.zoneName .. "|r"))
+                    else
+                        row.line2:SetText("no goal location in the database")
+                        row.right:SetText("")
+                    end
                 elseif e.kind == "trainer" then
                     row.line1:SetText(e.name .. "  |cff888888" .. (e.sub or "") .. "|r")
                     local o, parts = e.offer, {}
@@ -888,6 +1151,7 @@ end
 
 function Refresh()
     if not (frame and frame:IsShown()) then return end
+    local start = debugprofilestop()
     local cur = CurrentZone()
     BuildModel(cur)
     local hereText = summary.here > 0 and ("|cffffd100" .. summary.here .. " to turn in here|r") or nil
@@ -897,6 +1161,7 @@ function Refresh()
         local parts = {}
         if hereText then parts[#parts + 1] = hereText end
         if summary.other > 0 then parts[#parts + 1] = part(hereText and "Elsewhere" or "Turn in", summary.other) end
+        parts[#parts + 1] = part("Goals", summary.goals)
         parts[#parts + 1] = part("Trainers", summary.trainers)
         parts[#parts + 1] = part("Recipes", summary.vendors)
         frame.sub:SetText(table.concat(parts, "   "))
@@ -911,7 +1176,13 @@ function Refresh()
         frame.title:SetPoint("LEFT", show and (PAD + 22) or (PAD + 2), 0)
         if show then frame.questPulse:Play() else frame.questPulse:Stop() end
     end
+    local r0 = debugprofilestop()
     Render()
+    local now = debugprofilestop()
+    PerfAdd("render", now - r0)
+    local d = now - start
+    perf.n, perf.total = perf.n + 1, perf.total + d
+    if d > perf.max then perf.max = d end
 end
 
 local pending
@@ -1183,6 +1454,9 @@ events:SetScript("OnEvent", function(_, event, arg1)
             if db.shown == nil then db.shown = true end -- first install: open straight away
             db.collapsed = db.collapsed or {}
             db.allProfessions, db.point = nil, nil -- removed options
+            WhatsHereCharDB = WhatsHereCharDB or {}
+            charDb = WhatsHereCharDB
+            charDb.saved = charDb.saved or {}
         end
         return
     end
@@ -1199,9 +1473,10 @@ events:SetScript("OnEvent", function(_, event, arg1)
         for _, ev in ipairs({ "ZONE_CHANGED_NEW_AREA", "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "PLAYER_ENTERING_WORLD",
             "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "SKILL_LINES_CHANGED", "LEARNED_SPELL_IN_TAB",
             "NEW_RECIPE_LEARNED", "TRADE_SKILL_LIST_UPDATE", "GET_ITEM_INFO_RECEIVED", "TRAINER_CLOSED",
-            "PLAYER_LEVEL_UP" }) do
+            "PLAYER_LEVEL_UP", "QUEST_REMOVED" }) do
             pcall(events.RegisterEvent, events, ev)
         end
+        perf.since = GetTime()
         C_Timer.After(5, BuildIndex) -- let Questie finish its own startup first
         if db.shown then frame:Show() end
         return
@@ -1212,6 +1487,10 @@ events:SetScript("OnEvent", function(_, event, arg1)
         for k, v in pairs(spellKnown) do
             if v ~= true then spellKnown[k] = nil end
         end
+    end
+    perf.ev[event] = (perf.ev[event] or 0) + 1
+    if (event == "QUEST_TURNED_IN" or event == "QUEST_REMOVED") and arg1 and charDb.saved[arg1] then
+        charDb.saved[arg1] = nil
     end
     RequestRefresh()
 end)
@@ -1231,6 +1510,24 @@ SlashCmdList.WHATSHERE = function(msg)
         frame.fold.icon:SetTexture(ICON.up)
         db.shown = true
         frame:Show()
+    elseif msg == "perf" then
+        local secs = GetTime() - (perf.since or GetTime())
+        local n = math.max(perf.n, 1)
+        Print(("perf over %.0f s: %d refreshes, avg %.2f ms, worst %.2f ms."):format(secs, perf.n, perf.total / n, perf.max))
+        local parts = {}
+        for k, v in pairs(perf.t) do parts[#parts + 1] = ("%s %.2f"):format(k, v / n) end
+        table.sort(parts)
+        Print("avg ms per refresh: " .. table.concat(parts, ", "))
+        local calls = {}
+        for k, v in pairs(perf.c) do calls[#calls + 1] = k .. " " .. v end
+        table.sort(calls)
+        Print("calls: " .. (#calls > 0 and table.concat(calls, ", ") or "none"))
+        local evs = {}
+        for k, v in pairs(perf.ev) do evs[#evs + 1] = { k, v } end
+        table.sort(evs, function(a, b) return a[2] > b[2] end)
+        for i = 1, #evs do evs[i] = evs[i][1] .. " " .. evs[i][2] end
+        Print("events: " .. (#evs > 0 and table.concat(evs, ", ", 1, math.min(#evs, 6)) or "none"))
+        perf.n, perf.total, perf.max, perf.t, perf.c, perf.ev, perf.since = 0, 0, 0, {}, {}, {}, GetTime()
     elseif msg == "status" then
         local nv = 0
         for _ in pairs(index.vendors) do nv = nv + 1 end

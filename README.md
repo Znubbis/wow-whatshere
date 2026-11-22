@@ -1,6 +1,6 @@
 # What's Here
 
-A WoW: Forever addon that lists quests you can turn in (all zones), plus profession trainers and recipe vendors worth visiting in your current zone. Click a row to set a waypoint.
+A WoW: Forever addon that lists quests you can turn in (all zones), where to do your unfinished quests in the current zone, and profession trainers and recipe vendors worth visiting there. Right-click a quest to keep it on top in every zone; click any row to set a waypoint.
 
 ![What's Here in Desolace: one quest to turn in elsewhere, four recipe vendors nearby](docs/screenshot.png)
 

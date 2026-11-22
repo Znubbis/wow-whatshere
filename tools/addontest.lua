@@ -50,11 +50,14 @@ C_Map = {
 UiMapPoint = { CreateFromCoordinates = function(m, x, y) return { map = m, x = x, y = y } end }
 C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
 GetQuestDifficultyColor = function() return { r = 1, g = 1, b = 0 } end
-local log = { { questID = 783, title = "A Threat Within", level = 1 }, { questID = 4641, title = "Your Place In The World", level = 1 }, { questID = 840, title = "Conscript of the Horde", level = 10 } }
+local log = { { questID = 783, title = "A Threat Within", level = 1 }, { questID = 4641, title = "Your Place In The World", level = 1 }, { questID = 840, title = "Conscript of the Horde", level = 10 },
+  { questID = 817, title = "Practical Prey", level = 8 }, { questID = 790, title = "Sarkoth", level = 4 }, { questID = 5441, title = "Lazy Peons", level = 4 } }
+local objectives = { [840] = { {} }, [817] = { { text = "Durotar Tiger Fur: 2/4", finished = false } },
+  [790] = { { text = "Sarkoth's Mangled Claw: 1/1", finished = os.getenv("SARKOTH_DONE") == "1" } }, [5441] = { { text = "Peons Awoken: 1/5", finished = false } } }
 C_QuestLog = {
   GetNumQuestLogEntries = function() return #log end, GetInfo = function(i) return log[i] end,
   IsComplete = function(q) return q == 783 end, IsFailed = function() return false end,
-  GetQuestObjectives = function(q) if q == 840 then return { {} } end return {} end,
+  GetQuestObjectives = function(q) return objectives[q] or {} end,
 }
 SlashCmdList = {}
 debugprofilestop = function() return os.clock() * 1000 end
@@ -63,6 +66,7 @@ dofile(os.getenv("NAOWH") .. "/Data/RecipeData.lua")
 LW_RANK = tonumber(os.getenv("LW") or 120)
 local S = { Shell = function() print("SKIN Shell") end, Font = function() end, GetAccentColor = function() return 0.05, 0.82, 0.62 end, OnLooksChanged = function() end }
 EllesmereUI = { RegisterSkin = function(n, f) print("SKIN register", n) f(S) end }
+if os.getenv("PRESET_CHAR") then WhatsHereCharDB = loadstring("return " .. os.getenv("PRESET_CHAR"))() end
 if os.getenv("PRESET_DB") then WhatsHereDB = loadstring("return " .. os.getenv("PRESET_DB"))() end -- PRESET_DB
 local chunk = assert(loadfile(arg[3]))
 chunk("WhatsHere", {})
@@ -82,7 +86,7 @@ for _, f in ipairs(frames) do if f.kind == "frame" and rawget(f, "entry") then r
 for _, r in ipairs(rows) do
   local e = r.entry
   if e.header then print(("== %s (%s)"):format(e.text, tostring(e.count)))
-  else print(("  %s | %s | %s | loc=%s"):format(e.kind, e.title or e.name, e.who or e.sub or "", e.loc and (e.loc.ui .. " " .. e.loc.x .. "," .. e.loc.y .. (e.loc.here and " here" or "")) or "nil")) end
+  else print(("  %s | %s | %s | loc=%s"):format(e.kind, e.title or e.name, e.who or e.sub or e.what and (tostring(e.progress) .. " / " .. e.what) or "", e.loc and (e.loc.ui .. " " .. e.loc.x .. "," .. e.loc.y .. (e.loc.here and " here" or "")) or "nil")) end
 end
 rows[2].scripts.OnClick(rows[2])
 for _, r in ipairs(rows) do local e = r.entry if e.kind == "vendor" then for _, x in ipairs(e.recipes) do print("    recipe", x.id, x.name) end end end
@@ -94,3 +98,5 @@ bar.scripts.OnMouseUp(bar, "LeftButton") print("folded:", WhatsHereDB.windowColl
 bar.scripts.OnMouseUp(bar, "LeftButton") print("unfolded:", WhatsHereDB.windowCollapsed)
 print("expanded sub:", WhatsHereFrame.sub.text, "icon shown:", WhatsHereFrame.questIcon.shown)
 bar.scripts.OnMouseUp(bar, "LeftButton") print("folded sub:", WhatsHereFrame.sub.text)
+-- right-click save toggle on the first goal row
+for _, r in ipairs(rows) do local e = r.entry if e and e.kind == "goal" then r.IsMouseOver = function() return false end r.scripts.OnClick(r, "RightButton") print("saved after right-click:", WhatsHereCharDB.saved[e.quest]) break end end

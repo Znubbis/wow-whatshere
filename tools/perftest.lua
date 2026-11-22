@@ -99,7 +99,7 @@ collectgarbage("collect")
 print(("memory after index: %.1f MB (whole Lua state incl. QuestieDB harness)"):format(collectgarbage("count") / 1024))
 WhatsHereFrame:Show()
 local Refresh = function() WhatsHereFrame.scripts.OnUpdate(WhatsHereFrame, 4) end
-for _, map in ipairs({ 1454, 1453, 1446, 1443, 1413 }) do
+for _, map in ipairs({ 1458, 1454, 1453, 1446, 1443, 1413 }) do
   MAP = nil
   C_Map.GetBestMapForUnit = function() return map end
   local t = clock(); Refresh(); local first = (clock() - t) * 1000
@@ -110,3 +110,4 @@ local Refresh = function() WhatsHereFrame.scripts.OnUpdate(WhatsHereFrame, 4) en
 local m0 = collectgarbage("count")
 for i = 1, 200 do Refresh() end
 print(("garbage from 200 refreshes: %.0f KB"):format(collectgarbage("count") - m0))
+SlashCmdList.WHATSHERE("perf")

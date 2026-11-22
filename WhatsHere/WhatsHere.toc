@@ -1,11 +1,12 @@
 ## Interface: 16001
 ## Title: What's Here
-## Notes: Quests you can turn in, plus trainers and recipe vendors worth visiting in your zone – click for a waypoint.
+## Notes: Quests to turn in, nearby quest goals, and trainers and recipe vendors worth visiting in your zone – click for a waypoint.
 ## Author: Znubbis
-## Version: 0.1.0
+## Version: 0.2.0
 ## Dependencies: QuestieDB
 ## OptionalDeps: Questie, TomTom, NaowhForever, NaowhForever_Professions, EllesmereUI, EllesmereUIBlizzardSkin
 ## SavedVariables: WhatsHereDB
+## SavedVariablesPerCharacter: WhatsHereCharDB
 ## IconTexture: Interface\Icons\INV_Misc_Note_01
 
 WhatsHere.lua
