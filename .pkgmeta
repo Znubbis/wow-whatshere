@@ -10,3 +10,7 @@ ignore:
   - docs
   - curseforge
   - dist
+
+manual-changelog:
+  filename: WhatsHere/CHANGELOG.md
+  markup-type: markdown

@@ -2,7 +2,7 @@
 ## Title: What's Here
 ## Notes: Quests to turn in, nearby quest goals, and trainers and recipe vendors worth visiting in your zone – click for a waypoint.
 ## Author: Znubbis
-## Version: 0.2.0
+## Version: 0.2.1
 ## Dependencies: QuestieDB
 ## OptionalDeps: Questie, TomTom, NaowhForever, NaowhForever_Professions, EllesmereUI, EllesmereUIBlizzardSkin
 ## SavedVariables: WhatsHereDB
