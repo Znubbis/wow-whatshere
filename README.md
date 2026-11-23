@@ -19,3 +19,5 @@ Full description, dependencies and known limitations: [WhatsHere/README.md](What
   ```
 
   `encoding.lua` emulates `C_EncodingUtil` (base64, zlib via the luajit FFI, CBOR), so libz must be installed.
+- `curseforge/`: logo and page text for the CurseForge project (id 1826342).
+- `.github/workflows/release.yml`: pushing a `v*` tag packages `WhatsHere/` with the BigWigs packager and uploads it to CurseForge and GitHub Releases. Bump `## Version` in the TOC first. The CurseForge API token is the repository secret `CF_API_TOKEN`.

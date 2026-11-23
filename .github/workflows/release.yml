@@ -1,0 +1,42 @@
+# Packages the WhatsHere/ folder with the BigWigs packager.
+#  - Pushing a tag v* builds the zip and uploads it to CurseForge (project id in the TOC)
+#    and to a GitHub release (with release.json, so WowUp can install from GitHub too).
+#  - Running it by hand (Actions > Package and release > Run workflow) only builds the zip
+#    and attaches it to the run, nothing is uploaded.
+name: Package and release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      GH_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags + history for the version number and changelog
+
+      - name: Build only (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -t ${{ github.workspace }}/WhatsHere -d
+
+      - name: Build and upload
+        if: github.event_name == 'push'
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -t ${{ github.workspace }}/WhatsHere
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: WhatsHere/.release/*.zip
