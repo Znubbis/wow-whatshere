@@ -1,0 +1,12 @@
+# BigWigs packager: the addon lives in WhatsHere/; lift it to the top of the zip.
+package-as: WhatsHere
+
+move-folders:
+  WhatsHere/WhatsHere: WhatsHere
+
+ignore:
+  - README.md
+  - tools
+  - docs
+  - curseforge
+  - dist
